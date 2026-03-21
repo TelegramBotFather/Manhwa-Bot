@@ -112,6 +112,7 @@ async def start(client, message):
 
 
 @Bot.on_message(filters.private)
+@igrone_error
 async def on_private_message(client, message):
   channel = Vars.FORCE_SUB_CHANNEL
   if channel in ["None", None, "none", "OFF", False, "False", ""]:
