@@ -88,22 +88,12 @@ def get_episode_number(text: str) -> Optional[str]:
 
 
 def get_effective_user_id(user_id: int | Message | str) -> str:
-    """Returns a shared ID for admins if IS_PRIVATE is True."""
-    if isinstance(user_id, Message):
-        user_id = user_id.from_user.id
-
-    try: 
-        user_id = int(user_id)
-    except Exception:
-        user_id = "shared_admin_subs"
-
-    if user_id == "shared_admin_subs":
-        return "shared_admin_subs"
-
-    if Vars.IS_PRIVATE and user_id in Vars.ADMINS:
-        return "shared_admin_subs"
+  """Returns a shared ID for admins if IS_PRIVATE is True."""
+  if isinstance(user_id, Message):
+    user_id = user_id.from_user.id
+  return str(user_id)
     
-    return str(user_id)
+        
 
 
 slugs_sites = ["cx", "as"]
