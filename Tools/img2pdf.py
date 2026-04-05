@@ -1,6 +1,5 @@
 """
 This module provides functions to download, convert, and compress images, and then convert them into a PDF file.
-
 Modified:- Dra-Sama
 """
 from typing import Optional
@@ -116,6 +115,8 @@ def download_image(
     idx: str, image_url:str, download_dir: str, 
     headers: Optional[dict] = None, cs: bool = False, 
 ):
+    global _session, _scraper
+    
     idx = idx.zfill(5)
     img_path = os.path.join(download_dir, f"{idx}.jpg")
     
