@@ -7,71 +7,135 @@ from urllib.parse import urlparse, urljoin, quote, quote_plus
 import re
 from loguru import logger
 from .utitls import DEAULT_MSG_FORMAT
+from copy import deepcopy as copy
 
 
-class AsuraScansWebs(Scraper):
-  def __init__(self):
-    super().__init__()
-    self.url = "https://asuracomic.net/"
-    self.bg = True
-    self.sf = "as"
-    self.headers = {
+
+class AsuraScansWebs:
+  url: str = "https://asurascans.com"
+  sf: str = "as"
+  cs: bool = True 
+  
+  api_url: str = "https://api.asurascans.com"
+  headers: dict = {
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-      "Host": "asuracomic.net",
+      "Host": "asurascans.com",
       "Connection": "keep-alive",
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    }
-
-  async def search(self, query: str = ""):
-    url = f"https://asuracomic.net/series?page=1&name={quote(query)}"
-    mangas = await self.get(url, headers=self.headers)
-    
-    bs = BeautifulSoup(mangas, "html.parser")
-    container = bs.find(class_="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-5 gap-3 p-4")
-    
+  }
+  
+  async def search(self, query: str = "") -> list:
     results = []
-    if container:
-      cards = container.find_all("a")
-      for card in cards:
-        data = {}
-        data['url'] = urljoin(self.url, card.get('href').strip())
-        data['poster'] = card.find_next('img').get('src').strip()
-        
-        data['type'] = card.find_next('span').text.strip()
-        data['title'] = card.find_next('span', class_="block text-[13.3px] font-bold").text.strip()
-        
-        data['id'] = data['url'].split("-")[-1]
-        
-        results.append(data)
-        
+    headers = copy(self.headers)
+    headers['Host'] = "api.asurascans.com"
+    headers['Accept'] = "application/json, text/plain, */*"
+    
+    search_url = f"{self.api_url}/api/search?q={quote(query)}"
+    
+    mangas = await Scraper(headers=headers).get(search_url, cs=True, rjson=True)
+    
+    if not isinstance(mangas, dict):
+      return results
+    
+    if "data" not in mangas:
+      return results
+    
+    for manga_data in mangas['data']:
+      cover = manga_data.get("cover", None)
+      title = manga_data.get("title", None)
+      url = manga_data.get("public_url", None)
+      if not url:
+        continue
+
+      url = urljoin(self.url, url)
+      
+      genres = manga_data.get("genres", [])
+      genres = [ g['name'] for g in genres if "name" in g ]
+      genres = ", ".join(genres) if genres else "N/A"
+      status = manga_data.get("status", "N/A")
+      description = manga_data.get("description", "N/A").strip()
+
+      msg = DEAULT_MSG_FORMAT.format(
+        title=title,
+        status=status,
+        genres=genres,
+        summary=description[:400],
+        url=url
+      )
+      results.append({
+        "title": title,
+        "url": url,
+        "poster": cover,
+        "msg": msg
+      })
+    
     return results
 
-  async def get_chapters(self, data, page: int=1):
-    results = data
-    content = await self.get(results['url'], headers=self.headers)
-    if content:
-      bs = BeautifulSoup(content, "html.parser")
+  async def get_chapters(self, data: dict, page: int=1) -> dict:
+    results = data.copy()
+    del data
+    
+    content = await Scraper(headers=self.headers).get(results['url'], cs=True)
+    if not content:
+      return results
+    
+    
+    bs = BeautifulSoup(content, "html.parser")
+
+    if "poster" not in results or results['poster'] is None:
+      ptag = bs.select_one("div.rounded-xl.z-0.w-full.h-full.absolute.top-0.left-0")
+      if ptag and (img_tag := ptag.find_next("img")):
+        img_tag = img_tag.get("src")
+        results['poster'] = img_tag.strip() if img_tag else None
+
+    if "msg" not in results or results['msg'] is None:
+      # Description
+      desc = bs.select_one("div.mt-3.relative")
+      desc = desc.find_next("p") if desc else None
+      desc = desc.text.strip() if desc else "N/A" 
       
-      des = bs.find(class_="font-medium text-sm text-[#A2A2A2]")
-      des = des.text.strip() if des else "N/A"
+      # Genres
+      gene_tag = bs.select_one("div.hidden.lg\\:flex.max-w-full.gap-2.flex-wrap")
+      genres = gene_tag.find_all("a") if gene_tag else []
+      genres = ", ".join([ g.text.strip() for g in genres if g.text ])
       
-      gen = " ".join([g.text.strip() for g in bs.find_all("button", class_="text-white hover:text-themecolor text-sm cursor-pointer rounded-[3px] px-3 py-1 bg-[#343434]")])
+      status = bs.select_one('span.text-base.font-bold[class*="text-[#A78BFA]"].capitalize')
+      status = status.text.strip() if status else "N/A"
       
       results['msg'] = DEAULT_MSG_FORMAT.format(
         title=results['title'],
         status=results.get('type', "N/A"),
-        genres=gen,
-        summary=des[:400],
+        genres=genres,
+        summary=desc[:400],
         url=results['url']
       )
+
+    
+    container = bs.select_one("div.divide-y.divide-white\\/5")
+    results['chapters'] = []
+    for chapter in container.find_all("a"):
+      chapter_url = chapter.get("href", None)
+      if not chapter_url:
+        continue
+      chapter_url = urljoin(self.url, chapter_url)
       
-      container = bs.find(class_="pl-4 pr-2 pb-4 overflow-y-auto scrollbar-thumb-themecolor scrollbar-track-transparent scrollbar-thin mr-3 max-h-[20rem] space-y-2.5")
-      results['chapters'] = container
+      chapter_title = self.chapter_title(chapter.find_next("span"))
+      if not chapter_title:
+        continue
       
+      results['chapters'].append({
+          "title": chapter_title,
+          "url": chapter_url,
+          "manga_title": results['title'],
+          "poster": results['poster'] if 'poster' in results else None,
+      })
+    
     return results
   
-  def chapter_title(self, title):
+  @staticmethod
+  def chapter_title(title) -> str:
     parts = []
+
     for content in title.contents:
         if content.name == 'span':
             parts.append(content.text.strip())
@@ -79,41 +143,58 @@ class AsuraScansWebs(Scraper):
             parts.append(content.strip())
     
     return ' '.join(parts).replace("  ", " ")
-    
-  def iter_chapters(self, data, page: int=1):
-    chapters_list = []
-    
-    cards = data['chapters'].find_all("a")
-    for card in cards:
-      titles = card.find_next('h3')
-      titles = self.chapter_title(titles)
-      
-      chapters_list.append({
-        "title": titles,
-        "url": f"https://asuracomic.net/series/{card['href']}",
-        "manga_title": data['title'],
-        "poster": data['poster'] if 'poster' in data else None,
-      })
-      
-    return chapters_list[(page - 1) * 60:page * 60] if page != 1 else chapters_list
 
-  async def get_pictures(self, url, data=None):
-    response = await self.get(url, headers=self.headers)
+  
+  def iter_chapters(self, data, page: int=1) -> list:
+    if "chapters" not in data:
+      return []
+    
+    return data['chapters'][(page - 1) * 60:page * 60] if page != 1 else data['chapters']
+
+  @staticmethod
+  def clean_astro(props_str: str):
+    while True:
+      props_str = props_str.replace('&quot;', '"')
+      try:
+        return json.loads(props_str)
+      except Exception:
+        continue
+      
+  async def get_pictures(self, url, data=None) -> list:
+    image_url = []
+    
+    response: str = await Scraper(headers=self.headers).get(url, cs=True)
+    if not response:
+      return image_url
+
     bs = BeautifulSoup(response, "html.parser")
     
-    script_tags = bs.find_all('script')
-    image_links = []
-    for script in script_tags:
-       if script.string and "self.__next_f.push" in script.string and r'\"pages\"' in script.string:
-           script_content = script.string
-           pattern = r'\\\"pages\\\":(\[.*?])'
-           match = re.search(pattern, script_content)
-           if match:
-               json_string = f'{{"pages":[{match.group(1)}]}}'
-               json_string = json_string.replace(r'\"', '"')
-               json_data = json.loads(json_string)
-               nested_pages = json_data['pages'][0]
-               image_links = [page['url'] for page in nested_pages if isinstance(page, dict)]
-               return image_links
+    astro_tag = bs.find_all("astro-island")
+    for astro_ in astro_tag:
+      astro_text = astro_.get("props", None)
+      if not isinstance(astro_text, str):
+        continue
+      
+      astro_text = self.clean_astro(astro_text)
+      if not astro_text:
+        continue
+
+      
+      if "pages" not in astro_text:
+        continue
+      for img in astro_text['pages']:
+        if not isinstance(img, list):
+          continue
+        
+        for img_x in img:
+          try:
+            if not isinstance(img_x[1], dict):
+              continue
+            
+            image_url.append(img_x[1]['url'][-1])
+          except Exception:
+            continue
+
+    return image_url
 
   
