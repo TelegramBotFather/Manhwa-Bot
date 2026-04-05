@@ -1,5 +1,6 @@
 
 from pyrogram.errors import FileReferenceEmpty, FileReferenceExpired, FileReferenceInvalid, UsernameInvalid
+import pyrogram.errors as pes
 
 from TG.storage import retry_on_flood, igrone_error, queue
 from bot import Bot, Vars, logger
@@ -63,7 +64,7 @@ def create_file_async(process):
 
 
 
-def clean_system(tasks_card: TaskCard, thumb: str| None, values: list):
+def clean_system(tasks_card: TaskCard, thumb: str, values: list):
     """Clean up files and directories based on task settings."""
 
     def safe_remove(path):
@@ -107,9 +108,10 @@ async def copy_media(channel_id, doc, caption):
       )
     except UsernameInvalid:
       pass
+    
     except Exception as e:
       logger.exception(f"Error copying media: {e}")
-
+      
 
 
 async def send_manga_chapter(
@@ -132,14 +134,14 @@ async def send_manga_chapter(
   banner2 = banner_setting.get("banner2_file_path", None)
 
   media_docs = []
-
+  
   if not tasks_card.picturesList:
     await igrone_error(send_error)(tasks_card, "Error at Getting Picture")
     raise NormalError()
-
+  
   if getattr(tasks_card, "processsing", None) is None:
     tasks_card.run_process()
-
+  
   main_dir = tasks_card.main_dir
   download_dir = tasks_card.download_dir
   compressed_dir = tasks_card.compressed_dir
@@ -148,30 +150,50 @@ async def send_manga_chapter(
   download_dir = f"{main_dir}/pictures"
   compressed_dir = f"{main_dir}/compress"
 
-
+  
   try:
-    file_name = tasks_card.setting.get('file_name', None)
-    if not file_name:
-      file_name = "Chapter {episode_number} {manga_title}"
+    # Process Filenames
+    file_name_template = tasks_card.setting.get('file_name', "Chapter {episode_number} {manga_title}")
+    if not file_name_template:
+      file_name_template = "Chapter {episode_number} {manga_title}"
+    
+    if tasks_card.webs.sf == "mf" and ("Vol" in tasks_card.manga_title or "Volume" in tasks_card.manga_title):
+      file_name_template = file_name_template.replace("Chapter", "Vol")
 
-    if tasks_card.webs.sf == "mf" and "Vol" in tasks_card.manga_title or "Volume" in tasks_card.manga_title:
-      file_name = file_name.replace("Chapter", "Vol")
-
-    caption = tasks_card.setting.get('caption', "<blockquote>{file_name}</blockquote>")
-    if not caption:
-      caption = "<blockquote>{file_name}</blockquote>"
-
-    replacements = {
-      "{file_name}": file_name,
+    short_replacements = {
       "{episode_number}": str(tasks_card.episode_number),
       "{chapter_num}": str(tasks_card.episode_number),
       "{manga_title}": tasks_card.manga_title,
     }
+    
+    full_replacements = {
+      "{episode_number}": str(tasks_card.episode_number),
+      "{chapter_num}": str(tasks_card.episode_number),
+      "{manga_title}": tasks_card.orginal_manga_title,
+    }
 
-    for key, value in replacements.items():
+    # True filename for the PDF file (short title)
+    file_name = file_name_template
+    for key, value in short_replacements.items():
       file_name = file_name.replace(key, value)
+    
+    # Fake filename for the Caption (full title)
+    full_file_name = file_name_template
+    for key, value in full_replacements.items():
+      full_file_name = full_file_name.replace(key, value)
 
-    for key, value in replacements.items():
+    # Process Caption
+    caption = tasks_card.setting.get('caption', "<blockquote>{file_name}</blockquote>")
+    if not caption:
+      caption = "<blockquote>{file_name}</blockquote>"
+    
+    # For caption, {file_name} and {manga_title} should be the FULL version
+    caption_replacements = {
+      "{file_name}": full_file_name,
+      **full_replacements
+    }
+    
+    for key, value in caption_replacements.items():
       caption = caption.replace(key, value)
 
     downloads_list = await tasks_card.processsing
@@ -183,11 +205,11 @@ async def send_manga_chapter(
     if not file_type:
       file_type = ['PDF']
 
-
+    
     processing_tasks = []
     if "PDF" in file_type:
       pdf_output_path = f"{main_dir}/{file_name}.pdf"
-
+      
       password = tasks_card.setting.get('password', None)
       try:
         compress = int(tasks_card.setting.get("compress", "80"))
@@ -196,10 +218,10 @@ async def send_manga_chapter(
           compress = int(await database.get_value(str(tasks_card.user_id), "compress"))
         except Exception:
           compress = 80
-
+      
       if not compress:
         compress = 80
-
+      
       hyperLink = tasks_card.setting.get("hyper", None)
 
       ## from here
@@ -208,40 +230,40 @@ async def send_manga_chapter(
         compressed_dir, password, compress, hyperLink,
         banner1, banner2
       ))
-
-
+      
+      
     if "CBZ" in file_type:
       cbz_output_path = f"{main_dir}/{file_name}.cbz"
       processing_tasks.append(create_file_async(images_to_cbz)(
         downloads_list, cbz_output_path
       ))
 
-
+    
     processing_tasks = await asyncio.gather(*processing_tasks)
     for task in processing_tasks:
       if task is not None:
         await igrone_error(send_error)(tasks_card, str(task))
         raise NormalError()
 
-
+    
     if pdf_output_path:
       media_docs.append(InputMediaDocument(pdf_output_path, caption=caption, thumb=thumb))
-
+    
     if cbz_output_path:
       media_docs.append(InputMediaDocument(cbz_output_path, caption=caption, thumb=thumb))
-
+    
     await igrone_error(tasks_card.sts.edit)("<code>Uploading.....</code>") if tasks_card.sts else None
-
+    
     if len(media_docs) < 0:
       await igrone_error(send_error)(tasks_card, "<i> Not Any File Type Found </i>")
       raise NormalError()
 
-
+    
     doc = await retry_on_flood(Bot.send_media_group)(int(tasks_card.chat_id), media_docs)
 
     await igrone_error(tasks_card.sts.edit)("<code>Uploading to targets.....</code>") if tasks_card.sts else None
 
-
+      
     await Uploader().upload_to_targets_channels(
       doc[-1], original_ep_num=str(tasks_card.episode_number),
       search_name=tasks_card.orginal_manga_title, user_id=str(tasks_card.user_id),
@@ -252,10 +274,10 @@ async def send_manga_chapter(
       dump = int(dump)
     except Exception: 
       dump = dump
-
+    
     if Vars.CONSTANT_DUMP_CHANNEL:
         await copy_media(Vars.CONSTANT_DUMP_CHANNEL, doc, caption)
-
+      
     if dump:
         await copy_media(dump, doc, caption)
 
@@ -265,7 +287,7 @@ async def send_manga_chapter(
       time_taken = f"{minutes}m, {seconds}s"
 
       user = await igrone_error(Bot.get_users)(int(tasks_card.user_id))
-
+      
       log_caption = LOGS_MESSAGE.format(
         caption=caption,
         url=tasks_card.url,
@@ -284,11 +306,15 @@ async def send_manga_chapter(
   except ImageDownloadError:
     error_msg = True
     await igrone_error(send_error)(tasks_card, f"Error at Downloading Picture at {tasks_card.url}")
+    
     if tasks_card.sts:
       await retry_on_flood(tasks_card.sts.edit_text)(f"<code>Error at Downloading Picture</code> : {tasks_card.url} ")
+      
     else:
       await retry_on_flood(Bot.send_message)(int(tasks_card.user_id), f"<code>Error at Downloading Picture</code> : {tasks_card.url} ")
-  except (FileReferenceExpired, FileReferenceEmpty, FileReferenceInvalid):
+
+  
+  except (FileReferenceExpired, FileReferenceEmpty, FileReferenceInvalid, pes.exceptions.bad_request_400.FileReferenceExpired):
     error_msg = True
     if tasks_card.sts:
       await retry_on_flood(tasks_card.sts.edit_text)("<b><i>Change Your Thumb or Banner and Try Again... </i></b> ")
@@ -305,7 +331,7 @@ async def send_manga_chapter(
 
   finally:
     clean_system(
-      tasks_card, thumb, 
+      tasks_card, str(thumb), 
       [
 
         pdf_output_path, cbz_output_path, 
